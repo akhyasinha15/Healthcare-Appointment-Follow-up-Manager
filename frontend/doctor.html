@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Doctor Portal</title>
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>🩺 Doctor Portal</h1>
+  <div class="nav">
+    <span class="muted" id="userLabel"></span>
+    <a href="#" id="logoutLink">Log out</a>
+  </div>
+</header>
+<main>
+
+  <div class="card">
+    <h2>My upcoming & recent appointments</h2>
+    <div id="appointmentsBox"></div>
+  </div>
+
+  <div class="card hidden" id="postVisitCard">
+    <h2>Post-visit notes for <span id="pvPatientName"></span></h2>
+    <div id="pvError" class="error-box hidden"></div>
+    <div id="pvSuccess" class="success-box hidden"></div>
+
+    <label>Clinical notes</label>
+    <textarea id="pvNotes" placeholder="Findings, diagnosis reasoning, etc."></textarea>
+    <label>Diagnosis</label>
+    <input type="text" id="pvDiagnosis" />
+
+    <label>Prescription</label>
+    <div id="rxRows"></div>
+    <button type="button" class="secondary" id="addRxRow">+ Add medication</button>
+
+    <label>Follow-up date (optional)</label>
+    <input type="date" id="pvFollowUp" />
+
+    <button id="submitPostVisit">Generate patient summary & submit</button>
+    <button class="secondary" type="button" id="closePostVisit">Close</button>
+  </div>
+
+</main>
+
+<script src="/js/api.js"></script>
+<script>
+  const user = requireAuth('doctor');
+  document.getElementById('userLabel').textContent = `Dr. ${user.name}`;
+  document.getElementById('logoutLink').addEventListener('click', (e) => { e.preventDefault(); clearSession(); window.location.href = '/index.html'; });
+
+  let activeAppointmentId = null;
+
+  function urgencyBadge(s) {
+    if (!s || !s.urgency_level) return '';
+    return `<span class="badge ${s.urgency_level.toLowerCase()}">Urgency: ${s.urgency_level}</span>`;
+  }
+
+  async function loadAppointments() {
+    const { appointments } = await api('/doctor/me/appointments');
+    const box = document.getElementById('appointmentsBox');
+    if (!appointments.length) { box.innerHTML = '<p class="muted">No appointments yet.</p>'; return; }
+    box.innerHTML = appointments.map(a => `
+      <div class="appointment-item">
+        <div><strong>${a.patient.name}</strong> &middot; ${fmtDateTime(a.slot_start)}</div>
+        <div class="meta">
+          <span class="badge ${a.status}">${a.status}</span>
+          ${urgencyBadge(a.SymptomSummary)}
+        </div>
+        ${a.SymptomSummary ? `
+          <div class="meta" style="margin-top:8px;">
+            <strong>Chief complaint:</strong> ${a.SymptomSummary.chief_complaint}<br/>
+            <strong>Suggested questions:</strong>
+            <ul>${(a.SymptomSummary.suggested_questions || []).map(q => `<li>${q}</li>`).join('')}</ul>
+            ${a.SymptomSummary.llm_status !== 'success' ? '<span class="muted">(AI summary used fallback data - review symptoms directly)</span>' : ''}
+          </div>` : ''}
+        ${a.status === 'confirmed' ? `<button class="post-visit-btn" data-id="${a.id}" data-name="${a.patient.name}">Add post-visit notes</button>` : ''}
+        ${a.PostVisitSummary ? `<div class="meta" style="margin-top:8px;"><strong>Patient summary sent:</strong> ${a.PostVisitSummary.patient_summary}</div>` : ''}
+      </div>
+    `).join('');
+    box.querySelectorAll('.post-visit-btn').forEach(btn => btn.addEventListener('click', () => openPostVisit(btn.dataset.id, btn.dataset.name)));
+  }
+
+  function rxRowHtml(i) {
+    return `
+      <div class="grid-2 rx-row" data-idx="${i}" style="border:1px solid #e2e8f0; padding:10px; border-radius:6px; margin-bottom:8px;">
+        <div><label>Drug</label><input class="rx-drug" placeholder="e.g. Paracetamol" /></div>
+        <div><label>Dosage</label><input class="rx-dosage" placeholder="e.g. 500mg" /></div>
+        <div><label>Times/day</label><input type="number" class="rx-freq" min="1" value="1" /></div>
+        <div><label>Duration (days)</label><input type="number" class="rx-duration" min="1" value="3" /></div>
+        <div><label>Dose time(s), comma separated</label><input class="rx-times" placeholder="e.g. 09:00,21:00" /></div>
+      </div>`;
+  }
+
+  function openPostVisit(appointmentId, patientName) {
+    activeAppointmentId = appointmentId;
+    document.getElementById('pvPatientName').textContent = patientName;
+    document.getElementById('pvNotes').value = '';
+    document.getElementById('pvDiagnosis').value = '';
+    document.getElementById('pvFollowUp').value = '';
+    document.getElementById('rxRows').innerHTML = rxRowHtml(0);
+    document.getElementById('pvError').classList.add('hidden');
+    document.getElementById('pvSuccess').classList.add('hidden');
+    document.getElementById('postVisitCard').classList.remove('hidden');
+    document.getElementById('postVisitCard').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  document.getElementById('addRxRow').addEventListener('click', () => {
+    const rows = document.getElementById('rxRows');
+    rows.insertAdjacentHTML('beforeend', rxRowHtml(rows.children.length));
+  });
+
+  document.getElementById('closePostVisit').addEventListener('click', () => document.getElementById('postVisitCard').classList.add('hidden'));
+
+  document.getElementById('submitPostVisit').addEventListener('click', async () => {
+    const errBox = document.getElementById('pvError');
+    const okBox = document.getElementById('pvSuccess');
+    errBox.classList.add('hidden'); okBox.classList.add('hidden');
+
+    const notes = document.getElementById('pvNotes').value.trim();
+    if (!notes) { errBox.textContent = 'Clinical notes are required.'; errBox.classList.remove('hidden'); return; }
+
+    const prescription = [...document.querySelectorAll('.rx-row')].map(row => ({
+      drug: row.querySelector('.rx-drug').value,
+      dosage: row.querySelector('.rx-dosage').value,
+      frequency_per_day: Number(row.querySelector('.rx-freq').value) || 1,
+      duration_days: Number(row.querySelector('.rx-duration').value) || 1,
+      times: row.querySelector('.rx-times').value.split(',').map(t => t.trim()).filter(Boolean),
+    })).filter(rx => rx.drug);
+
+    try {
+      const { summary, medicationRemindersScheduled } = await api(`/doctor/appointments/${activeAppointmentId}/post-visit`, {
+        method: 'POST',
+        body: {
+          clinical_notes: notes,
+          diagnosis: document.getElementById('pvDiagnosis').value,
+          prescription,
+          follow_up_date: document.getElementById('pvFollowUp').value || undefined,
+        },
+      });
+      okBox.textContent = `Submitted. Patient-friendly summary generated (${summary.llm_status}). ${medicationRemindersScheduled} medication reminder(s) scheduled.`;
+      okBox.classList.remove('hidden');
+      loadAppointments();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.classList.remove('hidden');
+    }
+  });
+
+  loadAppointments();
+</script>
+</body>
+</html>

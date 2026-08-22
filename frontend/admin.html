@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admin Portal</title>
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>⚙️ Admin Portal</h1>
+  <div class="nav">
+    <span class="muted" id="userLabel"></span>
+    <a href="#" id="logoutLink">Log out</a>
+  </div>
+</header>
+<main>
+
+  <div class="card">
+    <h2>Add a doctor</h2>
+    <div id="addDocError" class="error-box hidden"></div>
+    <div id="addDocSuccess" class="success-box hidden"></div>
+    <div class="grid-2">
+      <div><label>Full name</label><input id="docName" /></div>
+      <div><label>Email</label><input id="docEmail" type="email" /></div>
+      <div><label>Temporary password</label><input id="docPassword" type="text" value="Password123!" /></div>
+      <div><label>Phone</label><input id="docPhone" /></div>
+      <div><label>Specialisation</label><input id="docSpec" placeholder="e.g. Cardiology" /></div>
+      <div><label>Slot duration (minutes)</label><input id="docSlotDur" type="number" value="30" /></div>
+      <div><label>Consultation fee (₹)</label><input id="docFee" type="number" /></div>
+    </div>
+    <label>Working hours (per weekday, e.g. 09:00-13:00, 15:00-18:00; leave blank for day off)</label>
+    <div class="grid-2" id="workingHoursGrid">
+      <div><label>Mon</label><input class="wh-input" data-day="mon" placeholder="09:00-13:00,15:00-18:00" /></div>
+      <div><label>Tue</label><input class="wh-input" data-day="tue" placeholder="09:00-13:00,15:00-18:00" /></div>
+      <div><label>Wed</label><input class="wh-input" data-day="wed" placeholder="09:00-13:00,15:00-18:00" /></div>
+      <div><label>Thu</label><input class="wh-input" data-day="thu" placeholder="09:00-13:00,15:00-18:00" /></div>
+      <div><label>Fri</label><input class="wh-input" data-day="fri" placeholder="09:00-13:00" /></div>
+      <div><label>Sat</label><input class="wh-input" data-day="sat" placeholder="" /></div>
+    </div>
+    <button id="createDoctorBtn">Add doctor</button>
+  </div>
+
+  <div class="card">
+    <h2>Doctors & leave management</h2>
+    <div id="leaveError" class="error-box hidden"></div>
+    <div id="leaveSuccess" class="success-box hidden"></div>
+    <div id="doctorsBox"></div>
+  </div>
+
+</main>
+
+<script src="/js/api.js"></script>
+<script>
+  const user = requireAuth('admin');
+  document.getElementById('userLabel').textContent = `${user.name} (admin)`;
+  document.getElementById('logoutLink').addEventListener('click', (e) => { e.preventDefault(); clearSession(); window.location.href = '/index.html'; });
+
+  function parseWorkingHours() {
+    const wh = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+    document.querySelectorAll('.wh-input').forEach(inp => {
+      const day = inp.dataset.day;
+      const val = inp.value.trim();
+      if (!val) return;
+      wh[day] = val.split(',').map(range => range.trim().split('-').map(t => t.trim()));
+    });
+    return wh;
+  }
+
+  document.getElementById('createDoctorBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('addDocError');
+    const okBox = document.getElementById('addDocSuccess');
+    errBox.classList.add('hidden'); okBox.classList.add('hidden');
+    try {
+      await api('/admin/doctors', {
+        method: 'POST',
+        body: {
+          name: document.getElementById('docName').value,
+          email: document.getElementById('docEmail').value,
+          password: document.getElementById('docPassword').value,
+          phone: document.getElementById('docPhone').value,
+          specialisation: document.getElementById('docSpec').value,
+          slot_duration_minutes: Number(document.getElementById('docSlotDur').value) || 30,
+          consultation_fee: Number(document.getElementById('docFee').value) || undefined,
+          working_hours: parseWorkingHours(),
+        },
+      });
+      okBox.textContent = 'Doctor added successfully.';
+      okBox.classList.remove('hidden');
+      loadDoctors();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.classList.remove('hidden');
+    }
+  });
+
+  async function loadDoctors() {
+    const { doctors } = await api('/admin/doctors');
+    const box = document.getElementById('doctorsBox');
+    if (!doctors.length) { box.innerHTML = '<p class="muted">No doctors yet.</p>'; return; }
+    box.innerHTML = doctors.map(d => `
+      <div class="appointment-item">
+        <strong>Dr. ${d.User.name}</strong> &mdash; ${d.specialisation}
+        <div class="meta">${d.User.email} &middot; ${d.slot_duration_minutes} min slots</div>
+        <div class="grid-2" style="margin-top:10px;">
+          <div><label>Leave start date</label><input type="date" class="leave-start" data-doctor="${d.id}" /></div>
+          <div><label>Leave end date</label><input type="date" class="leave-end" data-doctor="${d.id}" /></div>
+        </div>
+        <label>Reason</label>
+        <input class="leave-reason" placeholder="e.g. Medical conference" />
+        <button class="mark-leave-btn" data-doctor="${d.id}">Mark leave (auto-notifies affected patients)</button>
+      </div>
+    `).join('');
+    box.querySelectorAll('.mark-leave-btn').forEach(btn => btn.addEventListener('click', () => markLeave(btn)));
+  }
+
+  async function markLeave(btn) {
+    const doctorId = btn.dataset.doctor;
+    const item = btn.closest('.appointment-item');
+    const start_date = item.querySelector('.leave-start').value;
+    const end_date = item.querySelector('.leave-end').value;
+    const reason = item.querySelector('.leave-reason').value;
+    const errBox = document.getElementById('leaveError');
+    const okBox = document.getElementById('leaveSuccess');
+    errBox.classList.add('hidden'); okBox.classList.add('hidden');
+    if (!start_date || !end_date) { errBox.textContent = 'Please pick start and end dates.'; errBox.classList.remove('hidden'); return; }
+    try {
+      const { message } = await api(`/admin/doctors/${doctorId}/leaves`, {
+        method: 'POST',
+        body: { start_date, end_date, reason },
+      });
+      okBox.textContent = message;
+      okBox.classList.remove('hidden');
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.classList.remove('hidden');
+    }
+  }
+
+  loadDoctors();
+</script>
+</body>
+</html>

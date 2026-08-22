@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Healthcare Appointment Manager</title>
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>🏥 Healthcare Appointment Manager</h1>
+</header>
+<main style="max-width:420px;">
+  <div class="card">
+    <h2 id="formTitle">Log in</h2>
+    <div id="errorBox" class="error-box hidden"></div>
+
+    <form id="loginForm">
+      <label>Email</label>
+      <input type="email" id="loginEmail" required />
+      <label>Password</label>
+      <input type="password" id="loginPassword" required />
+      <button type="submit">Log in</button>
+    </form>
+
+    <form id="registerForm" class="hidden">
+      <label>Full name</label>
+      <input type="text" id="regName" required />
+      <label>Email</label>
+      <input type="email" id="regEmail" required />
+      <label>Phone</label>
+      <input type="text" id="regPhone" />
+      <label>Password</label>
+      <input type="password" id="regPassword" required minlength="6" />
+      <button type="submit">Create patient account</button>
+    </form>
+
+    <p class="muted" style="margin-top:14px;">
+      <a href="#" id="toggleForm">New patient? Register here</a>
+    </p>
+
+    <div class="muted" style="margin-top:18px; border-top:1px solid #e2e8f0; padding-top:12px;">
+      <strong>Demo accounts</strong> (password: <code>Password123!</code>)<br/>
+      admin@clinic.example.com &middot; dr.sharma@clinic.example.com &middot; patient@example.com
+    </div>
+  </div>
+</main>
+
+<script src="/js/api.js"></script>
+<script>
+  const loginForm = document.getElementById('loginForm');
+  const registerForm = document.getElementById('registerForm');
+  const toggleForm = document.getElementById('toggleForm');
+  const errorBox = document.getElementById('errorBox');
+  const formTitle = document.getElementById('formTitle');
+  let showingLogin = true;
+
+  toggleForm.addEventListener('click', (e) => {
+    e.preventDefault();
+    showingLogin = !showingLogin;
+    loginForm.classList.toggle('hidden', !showingLogin);
+    registerForm.classList.toggle('hidden', showingLogin);
+    formTitle.textContent = showingLogin ? 'Log in' : 'Register (Patient)';
+    toggleForm.textContent = showingLogin ? 'New patient? Register here' : 'Already have an account? Log in';
+    errorBox.classList.add('hidden');
+  });
+
+  function routeByRole(user) {
+    if (user.role === 'admin') window.location.href = '/admin.html';
+    else if (user.role === 'doctor') window.location.href = '/doctor.html';
+    else window.location.href = '/patient.html';
+  }
+
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errorBox.classList.add('hidden');
+    try {
+      const { user, token } = await api('/auth/login', {
+        method: 'POST',
+        body: {
+          email: document.getElementById('loginEmail').value,
+          password: document.getElementById('loginPassword').value,
+        },
+      });
+      setSession(user, token);
+      routeByRole(user);
+    } catch (err) {
+      errorBox.textContent = err.message;
+      errorBox.classList.remove('hidden');
+    }
+  });
+
+  registerForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errorBox.classList.add('hidden');
+    try {
+      const { user, token } = await api('/auth/register', {
+        method: 'POST',
+        body: {
+          name: document.getElementById('regName').value,
+          email: document.getElementById('regEmail').value,
+          phone: document.getElementById('regPhone').value,
+          password: document.getElementById('regPassword').value,
+        },
+      });
+      setSession(user, token);
+      routeByRole(user);
+    } catch (err) {
+      errorBox.textContent = err.message;
+      errorBox.classList.remove('hidden');
+    }
+  });
+
+  // If already logged in, skip straight to the right portal
+  const existing = getUser();
+  if (existing && getToken()) routeByRole(existing);
+</script>
+</body>
+</html>

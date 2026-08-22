@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Patient Portal</title>
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>🏥 Patient Portal</h1>
+  <div class="nav">
+    <span class="muted" id="userLabel"></span>
+    <a href="#" id="logoutLink">Log out</a>
+  </div>
+</header>
+<main>
+
+  <div class="card">
+    <h2>Find a doctor & book an appointment</h2>
+    <div id="bookError" class="error-box hidden"></div>
+    <div id="bookSuccess" class="success-box hidden"></div>
+
+    <label>Search by specialisation</label>
+    <input type="text" id="specSearch" placeholder="e.g. General Physician" />
+    <button id="searchBtn">Search</button>
+
+    <div id="doctorList" style="margin-top:16px;"></div>
+  </div>
+
+  <div class="card hidden" id="slotCard">
+    <h2>Available slots for <span id="slotDoctorName"></span></h2>
+    <label>Date</label>
+    <input type="date" id="slotDate" />
+    <button id="loadSlotsBtn">Load slots</button>
+    <div class="slot-grid" id="slotGrid"></div>
+  </div>
+
+  <div class="card hidden" id="symptomCard">
+    <h2>Tell us about your symptoms</h2>
+    <p class="muted">Your held slot expires in <span id="holdCountdown">5:00</span>. This lets the doctor prepare an AI pre-visit summary before your visit.</p>
+    <label>Describe your symptoms</label>
+    <textarea id="symptomText" placeholder="e.g. Persistent cough for 5 days, mild fever in the evenings..."></textarea>
+    <label>How many days have you had these symptoms?</label>
+    <input type="number" id="symptomDuration" min="0" />
+    <button id="confirmBtn">Confirm appointment</button>
+    <button class="secondary" id="cancelHoldBtn" type="button">Cancel</button>
+  </div>
+
+  <div class="card">
+    <h2>My appointments</h2>
+    <div id="myAppointments"></div>
+  </div>
+
+</main>
+
+<script src="/js/api.js"></script>
+<script>
+  const user = requireAuth('patient');
+  document.getElementById('userLabel').textContent = `${user.name} (patient)`;
+  document.getElementById('logoutLink').addEventListener('click', (e) => { e.preventDefault(); clearSession(); window.location.href = '/index.html'; });
+
+  let selectedDoctorId = null;
+  let currentAppointmentId = null;
+  let holdTimer = null;
+
+  async function searchDoctors() {
+    const spec = document.getElementById('specSearch').value.trim();
+    const { doctors } = await api(`/patient/doctors${spec ? `?specialisation=${encodeURIComponent(spec)}` : ''}`);
+    const list = document.getElementById('doctorList');
+    if (!doctors.length) { list.innerHTML = '<p class="muted">No doctors found.</p>'; return; }
+    list.innerHTML = doctors.map(d => `
+      <div class="appointment-item">
+        <strong>Dr. ${d.User.name}</strong> &mdash; ${d.specialisation}
+        <div class="meta">${d.bio || ''} ${d.consultation_fee ? `&middot; Fee: ₹${d.consultation_fee}` : ''}</div>
+        <button data-doctor-id="${d.id}" data-doctor-name="${d.User.name}" class="pick-doctor-btn">View slots</button>
+      </div>
+    `).join('');
+    list.querySelectorAll('.pick-doctor-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        selectedDoctorId = btn.dataset.doctorId;
+        document.getElementById('slotDoctorName').textContent = `Dr. ${btn.dataset.doctorName}`;
+        document.getElementById('slotCard').classList.remove('hidden');
+        document.getElementById('symptomCard').classList.add('hidden');
+        document.getElementById('slotCard').scrollIntoView({ behavior: 'smooth' });
+      });
+    });
+  }
+  document.getElementById('searchBtn').addEventListener('click', searchDoctors);
+
+  document.getElementById('loadSlotsBtn').addEventListener('click', async () => {
+    const date = document.getElementById('slotDate').value;
+    if (!date || !selectedDoctorId) return;
+    const grid = document.getElementById('slotGrid');
+    grid.innerHTML = '<p class="muted">Loading...</p>';
+    try {
+      const { slots } = await api(`/appointments/doctors/${selectedDoctorId}/slots?date=${date}`);
+      if (!slots.length) { grid.innerHTML = '<p class="muted">No slots available this day.</p>'; return; }
+      grid.innerHTML = slots.map(s => `<button class="slot-btn" data-slot="${s}">${new Date(s).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</button>`).join('');
+      grid.querySelectorAll('.slot-btn').forEach(btn => btn.addEventListener('click', () => holdSlot(btn.dataset.slot)));
+    } catch (err) {
+      grid.innerHTML = `<p class="error-box">${err.message}</p>`;
+    }
+  });
+
+  async function holdSlot(slotStart) {
+    const errBox = document.getElementById('bookError');
+    errBox.classList.add('hidden');
+    try {
+      const { appointment, holdExpiresInSeconds } = await api('/appointments/hold', {
+        method: 'POST',
+        body: { doctorId: selectedDoctorId, slotStart },
+      });
+      currentAppointmentId = appointment.id;
+      document.getElementById('symptomCard').classList.remove('hidden');
+      document.getElementById('symptomCard').scrollIntoView({ behavior: 'smooth' });
+      startHoldCountdown(holdExpiresInSeconds);
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.classList.remove('hidden');
+      loadSlotsBtnClickAgain();
+    }
+  }
+
+  function loadSlotsBtnClickAgain() { document.getElementById('loadSlotsBtn').click(); }
+
+  function startHoldCountdown(seconds) {
+    clearInterval(holdTimer);
+    let remaining = seconds;
+    const el = document.getElementById('holdCountdown');
+    holdTimer = setInterval(() => {
+      remaining -= 1;
+      const m = Math.floor(remaining / 60), s = remaining % 60;
+      el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+      if (remaining <= 0) {
+        clearInterval(holdTimer);
+        document.getElementById('symptomCard').classList.add('hidden');
+        document.getElementById('bookError').textContent = 'Your hold expired. Please pick a slot again.';
+        document.getElementById('bookError').classList.remove('hidden');
+      }
+    }, 1000);
+  }
+
+  document.getElementById('cancelHoldBtn').addEventListener('click', async () => {
+    if (currentAppointmentId) {
+      await api(`/appointments/${currentAppointmentId}/cancel`, { method: 'POST', body: { reason: 'patient_changed_mind' } }).catch(() => {});
+    }
+    clearInterval(holdTimer);
+    document.getElementById('symptomCard').classList.add('hidden');
+  });
+
+  document.getElementById('confirmBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('bookError');
+    const okBox = document.getElementById('bookSuccess');
+    errBox.classList.add('hidden'); okBox.classList.add('hidden');
+    const symptoms = document.getElementById('symptomText').value.trim();
+    if (!symptoms) { errBox.textContent = 'Please describe your symptoms.'; errBox.classList.remove('hidden'); return; }
+    try {
+      const { preVisitSummary } = await api(`/appointments/${currentAppointmentId}/confirm`, {
+        method: 'POST',
+        body: { symptoms, durationDays: Number(document.getElementById('symptomDuration').value) || undefined },
+      });
+      clearInterval(holdTimer);
+      document.getElementById('symptomCard').classList.add('hidden');
+      okBox.textContent = `Appointment confirmed! AI triage urgency: ${preVisitSummary.urgency_level}. A confirmation email and calendar invite have been sent.`;
+      okBox.classList.remove('hidden');
+      loadMyAppointments();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.classList.remove('hidden');
+    }
+  });
+
+  async function loadMyAppointments() {
+    const { appointments } = await api('/patient/me/appointments');
+    const box = document.getElementById('myAppointments');
+    if (!appointments.length) { box.innerHTML = '<p class="muted">No appointments yet.</p>'; return; }
+    box.innerHTML = appointments.map(a => `
+      <div class="appointment-item">
+        <div><strong>Dr. ${a.Doctor.User.name}</strong> (${a.Doctor.specialisation}) &middot; ${fmtDateTime(a.slot_start)}</div>
+        <div class="meta">
+          <span class="badge ${a.status}">${a.status}</span>
+          ${a.SymptomSummary ? `<span class="badge ${a.SymptomSummary.urgency_level ? a.SymptomSummary.urgency_level.toLowerCase() : ''}">Urgency: ${a.SymptomSummary.urgency_level || 'n/a'}</span>` : ''}
+        </div>
+        ${a.PostVisitSummary ? `<div class="meta" style="margin-top:8px;"><strong>Visit summary:</strong> ${a.PostVisitSummary.patient_summary}<br/><strong>Medication:</strong> ${a.PostVisitSummary.medication_schedule_text}</div>` : ''}
+        ${a.status === 'confirmed' ? `<button class="danger cancel-appt-btn" data-id="${a.id}">Cancel</button>` : ''}
+      </div>
+    `).join('');
+    box.querySelectorAll('.cancel-appt-btn').forEach(btn => btn.addEventListener('click', async () => {
+      await api(`/appointments/${btn.dataset.id}/cancel`, { method: 'POST', body: { reason: 'patient_cancelled' } });
+      loadMyAppointments();
+    }));
+  }
+
+  loadMyAppointments();
+  // default date input to today
+  document.getElementById('slotDate').valueAsDate = new Date();
+</script>
+</body>
+</html>
